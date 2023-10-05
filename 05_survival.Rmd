@@ -1,0 +1,699 @@
+---
+title: "Survival"
+author: "steph"
+date: '2023-03-24'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+knitr::opts_knit$set(root.dir="C:/Users/Steph/OneDrive - Texas A&M University/Thrushes/survival/data/")
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+
+```{r, include=FALSE}
+#load packages
+pkgs<-c("tidyverse","HIest","viridis","ggpubr","fields","gsg","mgcv","survival","survminer","mgcViz")
+sapply(pkgs,library,character.only=T); rm(pkgs)
+theme_set(theme_classic())
+
+#read in survival functions
+source("../thrush_survival/00_functions_survival.R")
+
+#read in file with HIest estimates, individual names, and survival data
+HI_thrush<-read.csv("thrush_survival_230712.csv"); HI_thrush$X<-NULL
+
+poly.all<-data.frame(X.co=rep(c(0,0.5,1)), #make triangle polygon for plotting
+                     Y.co=rep(c(0,1,0)))
+
+```
+
+## Check distributions of ancestry across space
+
+Summary stats by release site - adults and juvies combined
+
+```{r, echo=FALSE}
+
+#recode sites by their ancestry type
+HI_thrush<-HI_thrush%>%
+  filter(!is.na(release_site))%>%
+  mutate(release_site=str_trim(release_site))%>%
+  mutate(release_site=str_replace(release_site," ","_"))%>%
+  mutate(pop_type=dplyr::recode(release_site,"Porpoise_Bay"="coastal","Pacific_Spirit"="coastal",
+                                "Kamloops"="inland","Kelowna"="inland",
+                                "Williams_Lake"="inland","Tatlayoko"="inland",
+                                "Alaska"="hybrid","Bella_Coola"="hybrid","Hope"="hybrid",
+                                "Pemberton"="hybrid","Washington"="hybrid"))
+
+#look at summary stats by release site
+
+HI_thrush%>%
+  filter(release_site=="Pemberton")%>%
+  group_by(release_year,release_site)%>%
+  summarise(count=n())
+
+HI_thrush%>%
+  group_by(release_site,pop_type)%>%
+  summarise(mean_ancestry=mean(ancestry),mean_heterozygosity=mean(heterozygosity),count=n())
+```
+
+Compare S and H distribution in and out of the hybrid zone
+
+```{r, echo=FALSE}
+p1<-ggplot()+
+  geom_polygon(data=poly.all,aes(x=X.co,y=Y.co),fill=NA,colour="black")+
+  geom_point(data=HI_thrush,aes(x=ancestry,y=heterozygosity),size=2,shape=1,stroke=2)+
+  coord_equal()+
+  xlab("Ancestry")+ylab("Heterozygosity")+
+  theme_classic()
+
+p2<-ggplot()+
+  geom_polygon(data=poly.all,aes(x=X.co,y=Y.co),fill=NA,colour="black")+
+  geom_point(data=HI_thrush%>%filter(pop_type%in%c("coastal","inland")),
+             aes(x=ancestry,y=heterozygosity,colour=release_site),size=2,shape=1,stroke=1)+
+  coord_equal()+scale_colour_viridis(discrete=T)+
+  xlab("Ancestry")+ylab("Heterozygosity")+
+  theme_classic()
+
+ggarrange(p2,p1,common.legend=T)
+
+
+```
+
+Histograms of ancestry across sites and across longitudes in Pemberton
+
+```{r, echo=FALSE}
+A<-ggplot()+
+  geom_histogram(data=HI_thrush%>%filter(!is.na(release_site)),
+                 aes(x=ancestry,fill=fct_reorder(release_site,ancestry)))+
+  scale_fill_viridis(discrete=T,option="C",name="release site")+
+  facet_wrap(vars(pop_type))+ggtitle("All sites")
+
+B<-ggplot()+
+  geom_histogram(data=HI_thrush%>%filter(pop_type%in%c("hybrid")&release_site=="Pemberton"&
+                                           !is.na(release_gps.w)),
+                 aes(x=ancestry,fill=as.factor(round(release_gps.w,2))))+
+  scale_fill_viridis(discrete=T,option="B",name="release GPS W")+
+  facet_wrap(vars(age_release))+ggtitle("Pemberton")
+
+ggarrange(A,B,nrow=2)
+```
+
+Plot by location in Pemberton
+
+```{r, echo=FALSE}
+A<-ggplot()+
+  geom_jitter(data=HI_thrush%>%filter(release_site=="Pemberton"&release_gps.w<(-122)),
+                 aes(x=release_gps.w,y=release_gps.n,colour=ancestry),
+              size=2,shape=1,stroke=1,width=0.01,height=0.01)+
+  scale_colour_viridis(option="B",name="ancestry")+
+  xlab("release GPS W")+ylab("release GPS N")+
+  facet_wrap(vars(age_release))+ggtitle("Pemberton")
+
+B<-ggplot(data=HI_thrush%>%filter(release_site=="Pemberton"&release_gps.w<(-122)),
+       aes(x=release_gps.w,y=ancestry))+
+  geom_point(size=2,shape=1,stroke=1)+
+  geom_smooth(method="lm")+
+  xlab("release GPS W")+
+  facet_wrap(vars(age_release))+ggtitle("Pemberton")
+
+ggarrange(A,B,nrow=2)
+
+```
+
+
+
+```{r, include=FALSE, echo=FALSE}
+
+#Look at survival by site
+#Restrict juvie analysis to Pemberton - Tatlayoko is inland, not hybrid, and Bella Coola has low detection
+
+summary.retrieval<-HI_thrush%>%filter(!is.na(t1_fall40)&!is.na(t5_spring40))%>%
+  group_by(release_site,age_release)%>%
+  summarize(count=n(),fall=mean(t1_fall40),spring=mean(t5_spring40),mean_ancestry=mean(ancestry))%>%
+  gather("season","proportion.detected",-release_site,-count,-age_release,-mean_ancestry)%>%
+  mutate(age_site=paste(release_site,age_release))
+
+ggplot(summary.retrieval,aes(x=factor(season),y=proportion.detected,
+                             group=age_site,colour=mean_ancestry,shape=age_site))+
+  geom_point(size=3)+geom_line(size=1)+
+  theme_minimal()+ylim(0,1)+
+  ylab("proportion detected")+xlab("season & latitude")
+
+```
+
+
+## Visualize survival across triangle plots
+
+Survival to breeding grounds
+
+```{r, echo=FALSE}
+HI_adult<-HI_thrush%>%filter(age_release%in%c("AHY","SY","ASY")&pop_type=="hybrid")%>%
+  mutate(retrieved_archival=as.numeric(retrieved_archival))%>%
+  filter(!is.na(retrieved_archival)) #FIX IN LATITUDE CLEANING
+HI_juvie<-HI_thrush%>%filter(age_release=="HY"&pop_type=="hybrid"&release_site=="Pemberton")
+
+HI_summary<-rbind(HI_juvie,HI_adult)%>%
+  mutate(reference=substr(name_in_vcf,1,7),
+         latitude=round(release_gps.n,3),longitude=round(release_gps.w,3))%>%
+  dplyr::select(tag_type,reference,release_site,latitude,longitude,release_year)%>%
+  rename(year=release_year)
+#write.csv(HI_summary,"../figures/individuals_table.csv")
+  
+```
+
+```{r}
+
+sum(HI_juvie$t1_fall40)
+sum(HI_adult$retrieved_archival)
+
+#get surface and "whiteout" polygons for plotting
+
+z.adult<-make_plot_surface(HI_adult,"retrieved_archival")
+z.juvie.s40<-make_plot_surface(HI_juvie,"t5_spring40")
+
+poly.juvie<-whiteOut_tri(HI_juvie)
+poly.adult<-whiteOut_tri(HI_adult)
+
+
+p1.tri<-ggplot()+
+  geom_polygon(data=poly.adult,aes(x=X.co,y=Y.co),fill="white",colour="white",size=2)+
+  geom_polygon(data=poly.all,aes(x=X.co,y=Y.co),fill=NA,colour="grey50",size=2)+
+  geom_point(data=HI_adult,
+             aes(x=ancestry,y=heterozygosity,
+                 shape=as.factor(retrieved_archival)),colour="grey10",size=2,stroke=1)+
+  scale_shape_manual(values=c(1,19),guide="none")+
+  xlab("Ancestry")+ylab("Heterozygosity")+coord_equal()
+
+
+p2.tri<-ggplot()+
+  geom_polygon(data=poly.juvie,aes(x=X.co,y=Y.co),fill="white",colour="white",size=2)+
+  geom_polygon(data=poly.all,aes(x=X.co,y=Y.co),fill=NA,colour="grey50",size=2)+
+  geom_point(data=HI_juvie,
+             aes(x=ancestry,y=heterozygosity,
+                 shape=as.factor(t5_spring40)),colour="grey10",size=2,stroke=1)+
+  scale_shape_manual(values=c(1,19),guide="none")+
+  xlab("Ancestry")+ylab("Heterozygosity")+coord_equal()
+
+ggarrange(p1.tri,p2.tri,labels=LETTERS)
+
+
+
+p1.tri<-ggplot()+
+  geom_polygon(data=poly.adult,aes(x=X.co,y=Y.co),fill="white",colour="white",size=2)+
+  geom_polygon(data=poly.all,aes(x=X.co,y=Y.co),fill=NA,colour="grey50",size=2)+
+  geom_point(data=HI_adult,
+             aes(x=ancestry,y=heterozygosity),colour="grey10",size=2,stroke=1)+
+  xlab("Ancestry")+ylab("Heterozygosity")+coord_equal()
+
+
+p2.tri<-ggplot()+
+  geom_polygon(data=poly.juvie,aes(x=X.co,y=Y.co),fill="white",colour="white",size=2)+
+  geom_polygon(data=poly.all,aes(x=X.co,y=Y.co),fill=NA,colour="grey50",size=2)+
+  geom_point(data=HI_juvie,
+             aes(x=ancestry,y=heterozygosity),colour="grey10",size=2,stroke=1)+
+  xlab("Ancestry")+ylab("Heterozygosity")+coord_equal()
+
+ggarrange(p1.tri,p2.tri,labels=LETTERS)
+
+
+ggplot()+
+  geom_polygon(data=poly.juvie,aes(x=X.co,y=Y.co),fill="white",colour="white",size=2)+
+  geom_polygon(data=poly.all,aes(x=X.co,y=Y.co),fill=NA,colour="grey50",size=2)+
+  geom_point(data=HI_juvie,
+             aes(x=ancestry,y=heterozygosity,colour=release_year),size=2,stroke=1)+
+  xlab("Ancestry")+ylab("Heterozygosity")+coord_equal()
+
+```
+
+```{r,fig.width=8}
+library(ggExtra)
+cb<-0 #pick starting point
+v.opt<-"mako" #pick colour palette
+
+vir.min.adult<-(min(z.adult$Zval)-min(z.juvie.s40$Zval))/(max(z.juvie.s40$Zval)-min(z.juvie.s40$Zval))*(1-cb)+cb
+vir.max.adult<-(1-(max(z.juvie.s40$Zval)-max(z.adult$Zval))/(max(z.juvie.s40$Zval)-min(z.juvie.s40$Zval)))*(1-cb)+cb
+
+library("ggnewscale")
+p1.tri<-ggplot()+
+  
+  geom_tile(data=z.adult,
+             aes(Xval,Yval,fill=Zval,colour=Zval))+
+  geom_polygon(data=poly.adult,aes(x=X.co,y=Y.co),fill="white",colour="white",size=2)+
+  scale_fill_viridis(name="Survival",option=v.opt,begin=vir.min.adult,end=vir.max.adult)+
+  scale_colour_viridis(name="Survival",option=v.opt,begin=vir.min.adult,end=vir.max.adult)+
+  geom_polygon(data=poly.all,aes(x=X.co,y=Y.co),fill=NA,colour="grey50",size=2)+
+  
+  new_scale_colour()+
+  new_scale_fill()+
+  
+  geom_point(data=HI_adult,aes(x=ancestry,y=heterozygosity,fill=as.factor(retrieved_archival),
+                               colour=as.factor(retrieved_archival)),alpha=0)+
+  scale_fill_viridis(option=v.opt,discrete=T,guide="none",end=0.7)+
+  scale_colour_viridis(option=v.opt,discrete=T,guide="none",end=0.7)+
+  xlab("Ancestry")+ylab("Heterozygosity")+coord_equal()+ggtitle("Adults")+
+  
+  theme(legend.position="none")
+
+
+p2.tri<-ggplot()+
+  geom_tile(data=z.juvie.s40,
+             aes(Xval,Yval,fill=Zval,colour=Zval))+
+  geom_polygon(data=poly.juvie,aes(x=X.co,y=Y.co),fill="white",colour="white",size=2)+
+  scale_fill_viridis(name="Survival",option=v.opt,begin=cb,end=1)+
+  scale_colour_viridis(name="Survival",option=v.opt,begin=cb,end=1)+
+  geom_polygon(data=poly.all,aes(x=X.co,y=Y.co),fill=NA,colour="grey50",size=2)+
+  
+  new_scale_colour()+
+  new_scale_fill()+
+  
+  geom_point(data=HI_juvie,aes(x=ancestry,y=heterozygosity,fill=as.factor(t5_spring40),
+                               colour=as.factor(t5_spring40)),alpha=0)+
+  scale_fill_viridis(option=v.opt,discrete=T,guide="none",end=0.7)+
+  scale_colour_viridis(option=v.opt,discrete=T,guide="none",end=0.7)+
+  xlab("Ancestry")+ylab("Heterozygosity")+coord_equal()+ggtitle("Juveniles")+
+  
+  theme(legend.position="none")
+
+
+p2.tile<-ggplot()+geom_tile(data=z.juvie.s40,aes(Xval,Yval,fill=Zval))+
+  scale_fill_viridis(name="Survival",option=v.opt,begin=cb,end=1)
+
+library(ggExtra)
+p3.tri<-ggMarginal(p1.tri,type="density",groupFill=TRUE)
+p4.tri<-ggMarginal(p2.tri,type="density",groupFill=TRUE)
+
+
+all.tri<-gridExtra::grid.arrange(p3.tri,p4.tri,get_legend(p2.tile),nrow=1,ncol=3,widths=c(2,2,1))
+all.tri.2<-gridExtra::grid.arrange(p1.tri,p2.tri,get_legend(p2.tile),nrow=1,ncol=3,widths=c(2,2,1))
+
+```
+
+
+plot expectations
+
+## Visualize survival across triangle plots
+
+Survival to breeding grounds
+
+```{r, echo=FALSE}
+HI_juvie.e<-HI_thrush%>%filter(age_release=="juvie"&pop_type=="hybrid"&release_site=="Pemberton")
+
+HI_exp<-expand.grid(ancestry=seq(0,1,by=0.02),heterozygosity=seq(0,1,by=0.02))
+HI_exp<-HI_exp%>%
+  filter(sp::point.in.polygon(ancestry,heterozygosity,
+                              poly.all$X.co,poly.all$Y.co)>0)%>%
+  mutate(Survival=(0.5)*abs(ancestry-0.5)+0.1)
+
+poly.adult
+z.exp<-make_plot_surface(HI_exp,"Survival")
+
+HI_exp$Survived<-NA
+for(i in 1:nrow(HI_exp)){
+ HI_exp$Survived[i]<-rbinom(1,1,HI_exp$Survival[i])}
+
+
+
+
+```
+
+
+
+```{r,fig.width=4.8}
+p.exp.tri<-ggplot()+
+  
+  geom_tile(data=z.exp,
+             aes(Xval,Yval,fill=Zval,colour=Zval))+
+  scale_fill_viridis(name="Survival",option=v.opt)+
+  scale_colour_viridis(name="Survival",option=v.opt)+
+  geom_polygon(data=poly.all,aes(x=X.co,y=Y.co),fill=NA,colour="grey50",size=2)+
+  
+  new_scale_colour()+
+  new_scale_fill()+
+  
+  geom_point(data=HI_exp,aes(x=ancestry,y=heterozygosity,fill=as.factor(Survived),
+                               colour=as.factor(Survived)),alpha=0)+
+  scale_fill_viridis(option=v.opt,discrete=T,guide="none",end=0.7)+
+  scale_colour_viridis(option=v.opt,discrete=T,guide="none",end=0.7)+
+  xlab("Ancestry")+ylab("Heterozygosity")+coord_equal()+
+  theme(legend.position="none")+
+  ggtitle("Expectations")
+p.exp.tile<-ggplot()+geom_tile(data=z.exp,aes(Xval,Yval,fill=Zval))+
+  scale_fill_viridis(name="Survival",option=v.opt)
+#library(ggExtra)
+p.exp.marginal<-ggMarginal(p.exp.tri,type="density",groupFill=TRUE)
+
+gridExtra::grid.arrange(p.exp.marginal,get_legend(p.exp.tile),
+                        nrow=1,ncol=2,widths=c(2,1))
+
+
+```
+
+
+
+
+
+
+
+
+
+Survival to different time points - juvies only
+
+```{r, echo=FALSE, include=FALSE}
+
+z.juvie.f40<-make_plot_surface(HI_juvie,"t1_fall40")
+z.juvie.f25<-make_plot_surface(HI_juvie,"t2_fall25")
+z.juvie.w00<-make_plot_surface(HI_juvie,"t3_winter00")
+z.juvie.s25<-make_plot_surface(HI_juvie,"t4_spring25")
+z.juvie.s40<-make_plot_surface(HI_juvie,"t5_spring40")
+
+
+z.juvie.f40$Latitude<-"fall40"
+z.juvie.f25$Latitude<-"fall25"
+z.juvie.w00$Latitude<-"winter00"
+z.juvie.s25$Latitude<-"spring25"
+z.juvie.s40$Latitude<-"spring40"
+
+z.juvie.season<-rbind(z.juvie.f40,z.juvie.f25,z.juvie.w00,z.juvie.s25,z.juvie.s40)
+
+HI_juvie.all.l<-
+  HI_juvie%>%select(name_in_vcf,ancestry,heterozygosity,t1_fall40,t2_fall25,
+                    t3_winter00,t4_spring25,t5_spring40)%>%
+  gather(Latitude,Survival,-name_in_vcf,-ancestry,-heterozygosity)%>%
+  mutate(Latitude=substring(Latitude,4))
+
+
+season_plots<-list()
+i<-1
+for(lat1 in unique(HI_juvie.all.l$Latitude)){
+  season_plots[[i]]<-ggplot()+
+    geom_tile(data=z.juvie.season%>%filter(Latitude==lat1),
+              aes(Xval,Yval,fill=Zval))+
+    geom_polygon(data=poly.all,aes(x=X.co,y=Y.co),fill=NA,colour="grey50",size=2)+
+    geom_jitter(data=HI_juvie.all.l%>%filter(Latitude==lat1),
+               aes(x=ancestry,y=heterozygosity,shape=as.factor(Survival)),colour="grey15",size=2.5,stroke=1)+
+    coord_equal()+
+    scale_shape_manual(values=c(1,19),guide="none")+
+    scale_fill_viridis(name="Survival")+
+    xlab("Ancestry")+ylab("Heterozygosity")+ggtitle(lat1)
+  i<-i+1}
+
+do.call(ggarrange,c(season_plots,nrow=2,ncol=3))
+
+```
+
+
+## GAMs - survival to breeding ground
+
+Juveniles
+
+```{r, echo=FALSE,fig.width=10}
+
+HI_juvie$release_year_f<-as.factor(paste("y",HI_juvie$release_year,sep=""))
+HI_juvie$sex_binary_f<-as.factor(paste("ancestry",HI_juvie$sex_binary,sep=""))
+mj1<-gam(t5_spring40~s(ancestry)+s(heterozygosity)+s(ancestry,heterozygosity)+
+      s(release_year_f,bs="re")+s(sex_binary_f,bs="re"),
+    family=binomial(link="logit"),
+    data=HI_juvie,method="REML")
+anova(mj1)
+
+p.mj1<-plot(getViz(mj1))
+print(p.mj1,page=1)
+
+```
+
+
+```{r, echo=FALSE,fig.width=10}
+
+HI_juvie$release_year_f<-as.factor(paste("y",HI_juvie$release_year,sep=""))
+
+for(x in unique(HI_juvie$release_year_f)){
+
+HI_juvie_yf<-HI_juvie%>%filter(release_year_f==x)
+
+mj1<-gam(t5_spring40~s(ancestry)+s(heterozygosity)+s(ancestry,heterozygosity),
+    family=binomial(link="logit"),
+    data=HI_juvie_yf,method="REML")
+#anova(mj1)
+print(x)
+p.mj1<-plot(getViz(mj1))
+print(p.mj1,page=1)}
+
+```
+
+
+
+```{r}
+
+SH_df=data.frame(ancestry=c(0.1,0.2333,0.3667,0.5,0.6333,0.7667,0.9),
+                 heterozygosity=c(0.1,0.3667,0.6333,0.9,0.6333,0.3667,0.1),
+                 ind=as.character(1:7),release_year_f="y2022",
+                 sex_binary_f="ancestry1")
+
+out_df<-exp(predict.gam(mj1,SH_df,exclude=c("s(sex_binary_f,bs=\"re\")","s(release_year_f,bs=\"re\")")))
+
+1-out_df[4]/out_df[1]
+1-out_df[4]/out_df[7]
+
+I1<-HI_juvie%>%filter(ancestry>0.8&heterozygosity<0.2)%>%
+  summarise(count=n(),mean_survival=mean(t5_spring40))%>%pull(mean_survival)
+
+
+C1<-HI_juvie%>%filter(ancestry<0.2&heterozygosity<0.2)%>%
+  summarise(count=n(),mean_survival=mean(t5_spring40))%>%pull(mean_survival)
+
+H1<-HI_juvie%>%filter(heterozygosity>0.8)%>%
+  summarise(count=n(),mean_survival=mean(t5_spring40))%>%pull(mean_survival)
+
+1-H1/C1
+1-H1/I1
+1-H1/(mean(c(C1,I1)))
+
+
+I1<-z.juvie.s40%>%filter(Xval>0.8&Yval<0.2)%>%
+  summarise(count=n(),mean_survival=mean(Zval))%>%pull(mean_survival)
+
+C1<-z.juvie.s40%>%filter(Xval<0.2&Yval<0.8)%>%
+  summarise(count=n(),mean_survival=mean(Zval))%>%pull(mean_survival)
+
+H1<-z.juvie.s40%>%filter(Yval>0.8)%>%
+  summarise(count=n(),mean_survival=mean(Zval))%>%pull(mean_survival)
+
+1-H1/C1
+1-H1/I1
+1-H1/(mean(c(C1,I1)))
+
+low_H<-z.juvie.s40%>%filter((Yval<0.1&Xval>0.9)|(Yval<0.1&Xval<0.9))%>%
+  summarise(count=n(),mean_survival=mean(Zval))%>%pull(mean_survival)
+high_H<-z.juvie.s40%>%filter(Yval>0.9)%>%
+  summarise(count=n(),mean_survival=mean(Zval))%>%pull(mean_survival)
+
+1-high_H/low_H
+
+
+low_H<-z.juvie.s40%>%filter((Yval<0.2&Xval>0.8)|(Yval<0.2&Xval<0.2))%>%
+  summarise(count=n(),mean_survival=mean(Zval))%>%pull(mean_survival)
+high_H<-z.juvie.s40%>%filter(Yval>0.8)%>%
+  summarise(count=n(),mean_survival=mean(Zval))%>%pull(mean_survival)
+
+s.s40<-1-high_H/low_H
+
+
+CB_H<-z.juvie.s40%>%filter(Yval>0.2&Yval<0.8&Xval<0.4)%>%
+  summarise(count=n(),mean_survival=mean(Zval))%>%pull(mean_survival)
+IB_H<-z.juvie.s40%>%filter(Yval>0.2&Yval<0.8&Xval>0.6)%>%
+  summarise(count=n(),mean_survival=mean(Zval))%>%pull(mean_survival)
+
+cb.s40<-1-CB_H/low_H
+ib.s40<-1-IB_H/low_H
+
+```
+
+```{r}
+s.boot<-vector()
+cb.boot<-vector()
+ib.boot<-vector()
+
+
+for(i in 1:100){
+row1<-sample(1:nrow(HI_juvie),replace=T)
+z.juvie.r1<-make_plot_surface(HI_juvie[row1,],"t5_spring40")
+
+low_H<-z.juvie.r1%>%filter((Yval<0.2&Xval>0.8)|(Yval<0.2&Xval<0.2))%>%
+  summarise(count=n(),mean_survival=mean(Zval))%>%pull(mean_survival)
+high_H<-z.juvie.r1%>%filter(Yval>0.8)%>%
+  summarise(count=n(),mean_survival=mean(Zval))%>%pull(mean_survival)
+
+s1<-1-high_H/low_H
+s.boot<-c(s.boot,s1)
+
+CB_H<-z.juvie.r1%>%filter(Yval>0.2&Yval<0.8&Xval<0.4)%>%
+  summarise(count=n(),mean_survival=mean(Zval))%>%pull(mean_survival)
+IB_H<-z.juvie.r1%>%filter(Yval>0.2&Yval<0.8&Xval>0.6)%>%
+  summarise(count=n(),mean_survival=mean(Zval))%>%pull(mean_survival)
+
+cb1<-1-CB_H/low_H
+ib1<-1-IB_H/low_H
+
+cb.boot<-c(cb.boot,cb1)
+ib.boot<-c(ib.boot,ib1)
+
+}
+
+
+quantile(s.boot, probs = c(0.025,0.975))
+quantile(cb.boot, probs = c(0.025,0.975))
+quantile(ib.boot, probs = c(0.025,0.975))
+
+
+```
+```{r}
+
+HI_lowH<-HI_juvie%>%filter((heterozygosity<0.2&ancestry>0.8)|(heterozygosity<0.2&ancestry<0.2))
+HI_highH<-HI_juvie%>%filter(heterozygosity<0.2&ancestry>0.8)
+
+
+for(i in 1:1000){
+lowH1<-HI_lowH[sample(1:nrow(HI_lowH),replace=T),]
+
+lowH1.out<-make_plot_surface(lowH1,"t5_spring40")
+
+high_H<-z.juvie.r1%>%filter(Yval>0.2)%>%
+  summarise(count=n(),mean_survival=mean(Zval))%>%pull(mean_survival)
+
+s1<-1-high_H/low_H
+s.boot<-c(s.boot,s1)
+
+
+C_H<-z.juvie.r1%>%filter(Yval<0.2&Xval<0.2)%>%
+  summarise(count=n(),mean_survival=mean(Zval))%>%pull(mean_survival)
+I_H<-z.juvie.r1%>%filter(Yval<0.2&Xval>0.8)%>%
+  summarise(count=n(),mean_survival=mean(Zval))%>%pull(mean_survival)
+c1<-1-high_H/C_H
+i1<-1-high_H/I_H
+
+c.boot<-c(c.boot,c1)
+i.boot<-c(i.boot,i1)
+
+}
+
+
+
+
+```
+
+
+```{r,fig.width=4,fig.height=4}
+# p.mj1.2019$plots[[3]]
+# p.mj1.2020$plots[[3]]
+# p.mj1.2021$plots[[3]]
+
+```
+
+Adults
+
+```{r, echo=FALSE,fig.width=10}
+
+HI_adult$release_year_f<-as.factor(paste("y",HI_adult$release_year,sep=""))
+HI_adult$sex_binary_f<-as.factor(paste("s",HI_adult$sex_binary,sep=""))
+
+sum(HI_adult$retrieved_archival)
+
+ma1<-gam(retrieved_archival~s(ancestry)+s(heterozygosity)+s(ancestry,heterozygosity)+
+      s(release_year_f,bs="re")+s(sex_binary_f,bs="re"),
+    family=binomial(link="logit"),
+    data=HI_adult,method="REML")
+anova(ma1)
+
+p.ma1<-plot(getViz(ma1))
+print(p.ma1,page=1)
+
+
+```
+
+
+## Cox proportional hazards test
+
+Latitude cutoffs as time steps
+
+```{r, echo=FALSE}
+
+#format data with latitude as time steps
+HI_juvie.cox.lat<-HI_juvie%>%pivot_longer(cols=c(t1_fall40,t2_fall25,t3_winter00,t4_spring25,t5_spring40),
+                        names_to="Latitude",values_to="Survival")%>%
+  group_by(name_in_vcf,ancestry,heterozygosity,sex_binary_f,release_year_f)%>%
+  summarise(survival_lat=sum(Survival))%>%
+  mutate(status_lat=case_when(survival_lat==5~1,survival_lat<5~2))
+
+
+
+library(coxme)
+res.cox <- coxme(Surv(survival_lat, status_lat) ~ ancestry*heterozygosity+
+                   (1|sex_binary_f)+(1|release_year_f), data = HI_juvie.cox.lat)
+library(car)
+Anova(res.cox,type="III")
+
+
+res.cox <- coxph(Surv(survival_lat, status_lat) ~ ancestry*heterozygosity, data = HI_juvie.cox.lat)
+anova(res.cox,test="Chisq")
+
+```
+
+Plot model with a sample of ancestry and heterozygosity values
+
+```{r, fig.height=6,width=2, echo=FALSE}
+
+SH_df=data.frame(ancestry=c(0.1,0.2333,0.3667,0.5,0.6333,0.7667,0.9),
+                 heterozygosity=c(0.1,0.3667,0.6333,0.9,0.6333,0.3667,0.1),ind=as.character(1:7))
+p1<-ggsurvplot(survfit(res.cox,data=HI_juvie.cox.lat,newdata=SH_df),ggtheme=theme_minimal(),
+           conf.int.alpha=0,palette=viridis(7),legend="none")
+p2<-ggplot()+
+  geom_polygon(data=poly.all,aes(x=X.co,y=Y.co),fill=NA,colour="grey50",size=2)+
+  geom_point(data=SH_df,
+             aes(x=ancestry,y=heterozygosity,colour=ind),size=5,stroke=1)+
+  scale_shape_manual(values=c(1,19),guide="none")+
+  scale_colour_viridis(discrete=T,option="viridis")+
+  theme(legend.position="none")+coord_fixed()+
+  xlab("Ancestry")+ylab("Heterozygosity")
+
+ggarrange(p1$plot,p2,widths=c(0.75,0.25),heights=c(0.75,0.25))
+
+fig2<-ggarrange(
+  all.tri.2,
+  ggarrange(p1$plot,p2,widths=c(0.75,0.25),heights=c(0.75,0.25)),
+  labels=LETTERS,nrow=2)
+fig2
+
+#ggsave(filename="../figures/Fig2/Fig2.svg",device="svg",plot=fig2,width=18,height=14,units="cm")
+```
+
+Look at variation in survival over the breeding season
+Goal: test whether selection on hybrids is imposed over migration specifically
+
+```{r}
+
+HI_juvie_y2<-
+  HI_juvie%>%filter(t5_spring40==1&release_year!=2022)%>%
+  mutate(t6_survivedBreeding=if_else(taggedDays>350,1,0))
+
+ggplot()+
+  geom_polygon(data=poly.all,aes(x=X.co,y=Y.co),fill=NA,colour="grey50",size=2)+
+  geom_point(data=HI_juvie_y2,
+             aes(x=ancestry,y=heterozygosity,shape=as.factor(t6_survivedBreeding)),
+             colour="grey10",size=2,stroke=1)+
+  scale_shape_manual(values=c(1,19),guide="none")+
+  xlab("Ancestry")+ylab("Heterozygosity")+coord_equal()
+
+ggplot()+
+  geom_histogram(data=HI_juvie_y2,
+             aes(x=ancestry,fill=as.factor(t6_survivedBreeding)))+
+  scale_fill_manual(values=c("grey10","grey90"),name="Survival")+
+  xlab("Ancestry")
+
+
+
+
+```
+
+
