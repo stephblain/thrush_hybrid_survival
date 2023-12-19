@@ -63,7 +63,8 @@ Compare S and H distribution in and out of the hybrid zone
 ```{r, echo=FALSE}
 p1<-ggplot()+
   geom_polygon(data=poly.all,aes(x=X.co,y=Y.co),fill=NA,colour="black")+
-  geom_point(data=HI_thrush,aes(x=ancestry,y=heterozygosity),size=2,shape=1,stroke=2)+
+  geom_point(data=HI_thrush,aes(x=ancestry,y=heterozygosity),
+             size=2,shape=1,stroke=2)+
   coord_equal()+
   xlab("Ancestry")+ylab("Heterozygosity")+
   theme_classic()
