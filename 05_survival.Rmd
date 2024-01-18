@@ -549,6 +549,7 @@ quantile(ib.boot, probs = c(0.025,0.975))
 
 
 ```
+
 ```{r}
 
 HI_lowH<-HI_juvie%>%filter((heterozygosity<0.2&ancestry>0.8)|(heterozygosity<0.2&ancestry<0.2))
@@ -601,15 +602,18 @@ HI_adult$sex_binary_f<-as.factor(paste("s",HI_adult$sex_binary,sep=""))
 
 sum(HI_adult$retrieved_archival)
 
-ma1<-gam(retrieved_archival~s(ancestry)+s(heterozygosity)+s(ancestry,heterozygosity)+
-      s(release_year_f,bs="re")+s(sex_binary_f,bs="re"),
-    family=binomial(link="logit"),
-    data=HI_adult,method="REML")
-anova(ma1)
+ma1<-glmer(retrieved_archival~ancestry*heterozygosity+
+           (1|release_year_f)+(1|sex_binary_f),family=binomial(link="logit"),
+    data=HI_adult)
+Anova(ma1)
+summary(ma1)
 
-p.ma1<-plot(getViz(ma1))
-print(p.ma1,page=1)
+HI_adult$fitted_survival<-plogis(predict(ma1))
+#write.csv(HI_adult,"thrush.adult.fitted.survival.csv",row.names=F)
 
+#tests
+#plot((1+ tanh(predict(ma1)/2))/2,plogis(predict(ma1)))
+#plot(qlogis(plogis(predict(ma1))),predict(ma1))
 
 ```
 
