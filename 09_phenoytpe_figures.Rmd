@@ -1,0 +1,287 @@
+---
+title: "phenotypes"
+author: "steph"
+date: "2023-04-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+knitr::opts_knit$set(root.dir="C:/Users/Steph/OneDrive - Texas A&M University/Thrushes/survival/data/")
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+
+
+```{r, include=FALSE}
+
+#load packages
+pkgs<-c("tidyverse","HIest","viridis","ggpubr","fields","mgcv","car","lme4",
+        "MuMIn","psych","qgraph")
+sapply(pkgs,library,character.only=T); rm(pkgs)
+source("../thrush_survival/00_functions_survival.R")
+theme_set(theme_classic())
+
+#read in data
+HI_thrush<-read.csv("thrush_survival_240106.csv") #survival data - output from survival_cleaning.R
+colnames(HI_thrush)<-gsub("_",".",colnames(HI_thrush))
+ch_thrush<-read.csv("thrush_survival_ch_240104.csv")
+
+phenotypes<-read.csv("thrush_phenotypes_HY_Pemberton.240104.csv")
+colnames(phenotypes)<-gsub("_",".",colnames(phenotypes))
+phenotypes<-phenotypes%>%select(-ancestry,-heterozygosity)
+
+phenoInput<-phenotypes%>%
+  select(doy.fall.r1,bearing.fall.1,
+         kipps,tail.length,tarsus.length,wing.cord)%>%
+  drop_na()
+
+migrateInput<-phenotypes%>%
+  select(doy.fall.r1,doy.fall.r2,doy.fall.r4,
+         bearing.fall.1,bearing.fall.2,bearing.fall.4,
+         kipps,tail.length,tarsus.length,wing.cord)%>%
+  drop_na()
+
+poly.all<-data.frame(X.co=rep(c(0,0.5,1)), #make triangle polygon for plotting
+                     Y.co=rep(c(0,1,0)))
+
+
+phenotypes<-left_join(phenotypes,HI_thrush%>%
+                        select(name.in.vcf,ancestry.no4,heterozygosity,
+                              ancestry.scaf4))%>%
+  rename(ancestry=ancestry.no4)
+
+```
+
+Visualize relationships of raw phenos to ancestry and sex
+
+```{r, fig.height=8*0.6, fig.width=8}
+all.traits=colnames(phenoInput)
+
+ggplot(phenotypes%>%select(name.in.vcf,age.release,ancestry,all.traits)%>%
+         pivot_longer(all.traits,names_to="trait.name",values_to="trait.val")%>%
+         drop_na(),aes(x=trait.val,fill=as.character(round(ancestry,1))))+
+  geom_histogram()+facet_wrap(vars(trait.name),scales="free")+
+  scale_fill_viridis(discrete=T,name="ancestry")+
+  theme(strip.text.y.left = element_text(angle = 0))
+
+phenoAncestryPlot<-phenotypes%>%select(name.in.vcf,age.release,ancestry,all.traits)%>%
+         pivot_longer(all.traits,names_to="trait.name",values_to="trait.val")%>%
+  mutate(trait.name=gsub("\\."," ",trait.name))%>%
+  mutate(trait.name=gsub("doy","departure day",trait.name))%>%
+  mutate(trait.name=gsub("cord","chord",trait.name))%>%
+  mutate(trait.name=gsub(" 1","",trait.name))%>%
+  mutate(trait.name=gsub(" r1","",trait.name))%>%
+         drop_na()
+
+ggplot(phenoAncestryPlot,aes(y=trait.val,x=ancestry))+
+  geom_point()+geom_smooth(method="lm",colour="grey20")+
+  facet_wrap(vars(trait.name),scales="free")+
+  scale_fill_viridis(discrete=T,name="ancestry")+
+  theme(strip.text.y.left = element_text(angle = 0))+
+  xlab("Trait value")+ylab("Ancestry")
+
+ggplot(phenotypes%>%select(name.in.vcf,age.release,ancestry,sex.binary,all.traits)%>%
+         pivot_longer(all.traits,names_to="trait.name",values_to="trait.val")%>%
+         drop_na(),aes(y=trait.val,x=sex.binary,colour=as.character(sex.binary)))+
+  geom_boxplot(size=1.5)+facet_wrap(vars(trait.name),scales="free")+
+  scale_colour_manual(values=c("coral3","cyan4"),name="Sex")+
+  theme(strip.text.y.left = element_text(angle = 0))
+
+
+```
+
+## Summarise phenotype variation along PC axes to account for correlated traits
+
+Select traits with sufficient sample size
+
+```{r}
+
+phenotypes<-left_join(phenotypes,HI_thrush%>%select(name.in.vcf,t5.spring40,t2.fall25))
+
+trait.l<-phenotypes%>%pivot_longer(cols=all_of(all.traits),
+                               values_to="trait.val",names_to="trait")%>%
+  select(ancestry,heterozygosity,release.year,release.site,t5.spring40,
+         t2.fall25,name.in.vcf,trait.val,trait,sex.binary)
+
+keep_traits<-trait.l%>%group_by(trait)%>%filter(!is.na(trait.val))%>%
+  summarise(counts=n())%>%filter(counts>50)%>%pull(trait)
+
+trait.l<-trait.l%>%filter(trait%in%keep_traits)
+df.pc<-trait.l%>%pivot_wider(names_from=trait,values_from=trait.val)%>%drop_na()
+trait.cols<-keep_traits
+
+
+```
+
+Run principal components analysis
+
+```{r, fig.height=4,fig.width=4}
+#principal components analysis with varimax rotation
+pc1<-principal(as.matrix(df.pc[,trait.cols]),nfactors=3,rotate="varimax",scores=T,covar=F)
+
+#pc1$values #eigenvalues - first three <1
+
+sum(pc1$values[1:3])/sum(pc1$values)
+
+
+pc.loadings<-data.frame(matrix(round(pc1$loadings,3),6,3),trait=rownames(pc1$weights))
+colnames(pc.loadings)[1:3]<-gsub("R","P",colnames(pc1$weights))
+
+ggplot(pc.loadings%>%pivot_longer(cols=1:3),aes(y=gsub("\\."," ",trait),x=name,fill=abs(value)))+
+  geom_tile()+scale_fill_gradient(low="white",high="grey10",name="loading")+
+  xlab("PC axis")+ylab("Trait")
+```
+
+```{r, fig.width=9,fig.height=9}
+biplot(pc1)
+
+df.pc<-cbind(df.pc,pc1$scores)
+
+axis.names<-c("WingShapeTail","BearingTarsus","DepartureDay")
+
+#weird syntax needed because passing variables instead of text
+df.pc<-df.pc%>%rename(!!axis.names[1]:=RC1,!!axis.names[2]:=RC2,
+               !!axis.names[3]:=RC3)
+
+```
+
+Look at relationship between PC axes and survival
+Expect U-shaped curve (disruptive selection)
+
+```{r}
+
+fit_Bear<-read.csv("outputs/hmmCJS.BearingTarsus.fit.phi.20240104.csv")
+fit_Day<-read.csv("outputs/hmmCJS.DepartureDay.fit.phi.20240104.csv")
+fit_Wing<-read.csv("outputs/hmmCJS.WingShapeTail.fit.phi.20240104.csv")
+
+fit_Bear$trait<-"Bearing + Tarsus"
+fit_Day$trait<-"Departure Day"
+fit_Wing$trait<-"Wing Shape + Tail"
+
+fit_pheno<-rbind(fit_Bear%>%rename(traitVal=BearingTarsus)%>%
+                   select(trait,traitVal,est.adj,lcl,ucl),
+      fit_Day%>%rename(traitVal=DepartureDay)%>%
+        select(trait,traitVal,est.adj,lcl,ucl),
+      fit_Wing%>%rename(traitVal=WingShapeTail)%>%
+        select(trait,traitVal,est.adj,lcl,ucl))%>%
+  mutate(lcl=lcl^299,ucl=ucl^299)%>%
+  mutate(yvar=0)
+
+pC<-ggplot(data=fit_pheno,aes(x=traitVal,y=est.adj))+
+  geom_ribbon(aes(ymin=lcl, ymax=ucl),fill="grey80")+
+  geom_smooth(colour="grey20",se=0)+
+  geom_point(aes(x=traitVal,y=yvar),shape="|",colour="grey20")+
+  facet_grid(cols=vars(trait))+ylab("Survival")+xlab("PC Score")
+
+pC  
+
+```
+
+Mismatch between PC axes
+
+```{r, fig.width=8,fig.height=3}
+axis.names<-c("WingShapeTail","BearingTarsus","DepartureDay")
+
+RC.mis<-estimate_mismatch(df.pc,axis.names,0.99)
+```
+
+
+```{r, fig.width=4,fig.height=4}  
+RC.mis.plots<-plot_pairwise_mismatch(RC.mis)
+do.call(ggarrange, c(RC.mis.plots))
+
+```
+
+Example mismatch
+
+```{r,fig.height=3,fig.width=6}
+
+ggarrange(RC.mis.plots[[1]],RC.mis.plots[[length(RC.mis.plots)]])
+
+RCdf<-RC.mis[[1]]
+
+parents.w<-RC.mis[[2]]%>%pivot_wider(names_from=trait,values_from=parent.trait.val)
+
+colnames(RCdf)<-gsub("\\+",".",gsub(" ",".",colnames(RCdf)))
+colnames(parents.w)<-gsub("\\+",".",gsub(" ",".",colnames(parents.w)))
+
+RCdf$t5.spring40<-as.character(RCdf$t5.spring40)
+mis.pair<-"BearingTarsus_DepartureDay"
+pB<-ggplot()+
+      geom_point(data=RCdf,
+                 aes_string(x=str_split(mis.pair,"_")[[1]][1],
+                            y=str_split(mis.pair,"_")[[1]][2],
+                            colour=mis.pair),size=2)+
+      geom_point(data=parents.w,aes_string(x=str_split(mis.pair,"_")[[1]][1],
+                                           y=str_split(mis.pair,"_")[[1]][2],
+                                           shape="pop.type"),size=5,stroke=1.5,
+                 colour="grey60")+
+      scale_shape_manual(values=c(2,5),name="",guide="none")+
+      scale_alpha(range=c(0.3,1))+
+      scale_colour_viridis(name="mismatch",option="F")+
+      #scale_colour_gradientn(colours=pal)+
+      xlab(gsub("\\."," ",gsub("\\.\\.\\."," + ",str_split(mis.pair,"_")[[1]][1])))+
+      ylab(gsub("\\."," ",gsub("\\.\\.\\."," + ",str_split(mis.pair,"_")[[1]][2])))+
+      theme(aspect.ratio=1)
+pB
+
+
+```
+
+Look at effect of mismatch on survival
+
+```{r}
+
+df.pc<-left_join(df.pc,RC.mis[[1]])
+
+#write.csv(df.pc,"phenotype_PCA_mismatch.csv",row.names=F)
+
+ch_thrush<-ch_thrush%>%rename(name.in.vcf=name_in_vcf)%>%
+    left_join(df.pc%>%select(name.in.vcf,WingShapeTail,BearingTarsus,DepartureDay,
+                             BearingTarsus_DepartureDay,WingShapeTail_BearingTarsus,
+                             WingShapeTail_DepartureDay,mismatch.all))%>%
+  filter(!is.na(BearingTarsus))%>%select(-X)%>%rename(name_in_vcf=name.in.vcf)
+#write.csv(ch_thrush,"thrush_phenotypes_ch_240104.csv")
+
+```
+
+
+```{r,fig.height=4,fig.width=6}
+
+juvie.l<-df.pc%>%pivot_longer(cols=grep("_|mismatch",colnames(df.pc)),
+                                    names_to="mismatch.pairs",values_to="mismatch.vals")
+
+juvie.l$mismatch.pairs<-gsub("mismatch.all","All Axes",gsub("_"," x\n",juvie.l$mismatch.pairs))
+
+pD<-ggplot(data=juvie.l,aes(x=mismatch.vals,y=t5.spring40))+
+  geom_jitter(width=0,height=0.1,colour="grey30")+
+  geom_smooth(colour="grey10",formula=y~x,method="glm")+
+  facet_wrap(vars(mismatch.pairs))+
+  ylab("Survival")+xlab("Mismatch")
+
+pD
+
+```
+Then fig 3
+
+```{r}
+
+
+img1<-png::readPNG("C:/Users/Steph/OneDrive - Texas A&M University/Thrushes/survival/figures/Fig3/phenoNetwork.png")
+pA<-ggplot() + 
+    background_image(img1) +
+    # This ensures that the image leaves some space at the edges
+    #theme(plot.margin = margin(t=1, l=1, r=1, b=1, unit = "cm"))+
+  theme(axis.line=element_line(color="white"))
+
+gg1<-ggarrange(pA,pB,ncol=1,nrow=2,heights=c(0.4,0.6),labels=c("A","B"))
+gg2<-ggarrange(pC,pD,ncol=1,nrow=2,heights=c(0.4,0.6),labels=c("C","D"))
+fig3<-ggarrange(gg1,gg2,widths=c(0.45,0.55))+ bgcolor("white")
+fig3
+#ggsave(filename=""C:/Users/Steph/OneDrive - Texas A&M University/Thrushes/survival/figures/Fig3/Fig3.png",device="png",plot=fig3,width=18,height=14,units="cm")
+#ggsave(filename="C:/Users/Steph/OneDrive - Texas A&M University/Thrushes/survival/figures/Fig3/Fig3.pdf",device="pdf",plot=fig3,width=18,height=14,units="cm")
+
+
+```
+

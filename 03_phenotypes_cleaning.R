@@ -21,19 +21,19 @@ morph_all2021<-read.csv("phenotypes_morpho.csv") #morphological phenotypes 2010-
 morph_geo2022<-read.csv("banding_2022_geos.csv") #combined banding sheet for 2022 geos
 morph_rad2022<-read.csv("banding_2022_motus.csv") #combined banding sheet for 2022 radios
 
-
 bear_rad2021<-read.csv("fall_bearing_radio_raw.csv") #raw fall bearings 2019-2021
 time_rad2021<-read.csv("radio_timing_raw.csv") #raw fall timing 2019-2021
 migrate_rad2022<-read.csv("all_new_phenotypes_fall_2022.csv") #fall timing and bearings 2022
 
 meta_all2021<-read.csv("survival_data_motus_by_latitude_updated.csv") #metadata 2010-2021
-refs_all2021<-read.csv("order_stitch.csv")
-sexChrom_all2022<-read.table("sexChrom_depths.txt",header=T)
+refs_all2021<-read.csv("order_stitch.csv") #references and name_in_vcf
+sexChrom_all2022<-read.table("sexChrom_depths.txt",header=T) #read depths of sex chroms
+sexChrom_unclear<-read.csv("sex_unclear_kd.csv",row.names="X") #sexes checked in lab
+
 meta_geo2022<-morph_geo2022 #set aside for metadata
 meta_rad2022<-morph_rad2022 #set aside for metadata
-HI_thrush<-read.csv("HI_thrush_feb2023.filtered25.10kb.s1.fst95.noinv.adj98.csv") #S&H estimates
 
-
+HI_thrush<-read.csv("hiest.stitch.ldr01.hwe.s1.fst94.noZ.adj98.csv") #S&H estimates
 
 ############################################
 #morphological phenotypes
@@ -135,6 +135,8 @@ meta_rad2022<-meta_rad2022%>%as_tibble()%>%
   filter(name_in_vcf%in%HI_thrush$ind)%>%
   select(colnames(meta_all2021))
 
+#get sex estimates for 2022 birds
+
 sexChrom_all2022<-sexChrom_all2022%>%
   left_join(rbind(meta_rad2022%>%select(name_in_vcf,tag_type),
                   meta_geo2022%>%select(name_in_vcf,tag_type)))%>%
@@ -143,18 +145,23 @@ sexChrom_all2022<-sexChrom_all2022%>%
 sexChrom_all2022.l<-sexChrom_all2022%>%
   mutate(scaf7=scaf7/scaf3,scaf25=scaf25/scaf3)%>%
   select(-scaf3)%>%
-  mutate(sex_maybe=case_when(scaf7<0.8~"female",scaf7>0.8&scaf7<1.0~"unclear",
-                             scaf7>1.0~"male"))%>%
-  mutate(sex_maybe=if_else(sex_maybe=="male"&scaf25<1,"unclear",sex_maybe))%>%
+  #mutate(sex_maybe=case_when(scaf7<0.8~"female",scaf7>0.8&scaf7<1.0~"unclear",
+  #                           scaf7>1.0~"male"))%>%
+  mutate(sex_maybe=case_when(scaf7<1~"female",scaf7>1.0~"male"))%>%
   mutate(sex_maybe=if_else(tag_type=="archival","male",sex_maybe))%>%
   pivot_longer(cols=c(scaf7,scaf25),names_to="scaffold",
                values_to="fold_diff")
 
-
+#replace unknown sexes with pcr-inferred sex
+sexChrom_all2022.l<-sexChrom_all2022.l%>%
+  left_join(sexChrom_unclear%>%select(name_in_vcf,sex)%>%rename(sex_PCR=sex))%>%
+  mutate(sex_PCR=case_when(sex_PCR=="F"~"female",sex_PCR=="M"~"male",TRUE~NA))%>%
+  mutate(sex_maybe=if_else(!is.na(sex_PCR),sex_PCR,sex_maybe))%>%
+  select(-sex_PCR)%>%rename(sex=sex_maybe)
 
 
 ggplot(sexChrom_all2022.l,aes(x=fct_reorder(name_in_vcf,fold_diff),
-                            y=fold_diff,colour=sex_maybe,group=name_in_vcf,
+                            y=fold_diff,colour=sex,group=name_in_vcf,
                             shape=scaffold))+
   geom_hline(yintercept=c(0.8,1))+
   geom_line(colour="grey30")+geom_point()+
@@ -164,35 +171,21 @@ ggplot(sexChrom_all2022.l,aes(x=fct_reorder(name_in_vcf,fold_diff),
 
 
 
-ggplot(sexChrom_all2022.l,aes(x=fold_diff,fill=sex_maybe))+
+ggplot(sexChrom_all2022.l,aes(x=fold_diff,fill=sex))+
   geom_histogram()+
   scale_fill_manual(values=c("coral3","cyan4","grey30"))+
   xlab("fold diff read depth\nsex chrom / autosome")+
   facet_grid(rows=vars(scaffold))+
   theme_minimal()
 
-# write.csv(sexChrom_all2022.l%>%
-#             filter(sex_maybe=="unclear")%>%
-#             pivot_wider(names_from="scaffold",values_from="fold_diff"),
-#           file="sex_unclear.csv")
-
-################################################################################
-################################################################################
-##WARNING WARNING WARNING WARNING FIX SEX LATER
-################################################################################
-################################################################################
 
 sexChrom_all2022.l<-sexChrom_all2022.l%>%
   filter(scaffold=="scaf7"&name_in_vcf%in%meta_rad2022$name_in_vcf)%>%
-  mutate(sex_binary=case_when(fold_diff>0.9&sex_maybe=="unclear"~"1",
-                              fold_diff<0.9&sex_maybe=="unclear"~"0",
-                              sex_maybe=="male"~"1",
-                              sex_maybe=="female"~"0",
-                              TRUE~sex_maybe))
+  mutate(sex_binary=case_when(sex=="male"~"1",sex=="female"~"0"))
 
 if(all(sexChrom_all2022.l$name_in_vcf==meta_rad2022$name_in_vcf)){
-  meta_rad2022$sex_binary<-sexChrom_all2022.l$sex_binary
-}
+  meta_rad2022$sex_binary<-sexChrom_all2022.l$sex_binary}else{
+    print("check name_in_vcf columns")}
 
 
 meta_all<-rbind(meta_all2021,meta_geo2022,meta_rad2022)
@@ -213,23 +206,6 @@ if(length(unique(meta_all$reference))==nrow(meta_all)){
 HI_thrush<-HI_thrush%>%
   rename(ancestry=S,heterozygosity=H,name_in_vcf=ind)%>%
   select(ancestry,heterozygosity,name_in_vcf)
-
-#######################################################################
-#######################################################################
-#######################################################################
-#######################################################################
-#######################################################################
-###MISSING MORPHOLOGICAL PHENOS FOR 2022 RADIO TAGGED BIRDS
-###MISSING MORPHOLOGICAL PHENOS FOR 2022 RADIO TAGGED BIRDS
-###MISSING MORPHOLOGICAL PHENOS FOR 2022 RADIO TAGGED BIRDS
-###MISSING MORPHOLOGICAL PHENOS FOR 2022 RADIO TAGGED BIRDS
-###MISSING MORPHOLOGICAL PHENOS FOR 2022 RADIO TAGGED BIRDS
-#######################################################################
-#######################################################################
-#######################################################################
-#######################################################################
-#######################################################################
-
 
 #missing phenotypes are for captive birds only
 meta_all%>%
@@ -252,7 +228,8 @@ phenotypes<-HI_thrush%>%
   filter(!name_in_vcf%in%c("BH30H01","BH29H01","BH29H03","BH29H04","BH29H05","BH29H07"))
 
 #write to file
-#write.csv(phenotypes,"../thrush_phenotypes_HY_Pemberton.csv",row.names=F)
+# write.csv(phenotypes,row.names=F,
+#           "C:/Users/Steph/OneDrive - Texas A&M University/Thrushes/survival/data/thrush_phenotypes_HY_Pemberton.240104.csv")
 
 
 ############################################
@@ -261,11 +238,6 @@ phenotypes<-HI_thrush%>%
 
 meta_all<-left_join(HI_thrush,meta_all)
 
-
-#write.csv(meta_all%>%filter(age_release%in%c("ASY","SY","AHY")),"adult_metaData_230712.csv")
-
-
-
 #add info for Montana birds
 meta_all<-rbind(meta_all%>%filter(!startsWith(name_in_vcf,"2")),
                 meta_all%>%filter(startsWith(name_in_vcf,"2"))%>%
@@ -273,4 +245,5 @@ meta_all<-rbind(meta_all%>%filter(!startsWith(name_in_vcf,"2")),
 all(!is.na(meta_all$tag_type))
 
 #write to file
-#write.csv(meta_all,"../thrush_meta_230712.csv",row.names=F)
+# write.csv(meta_all,row.names=F,
+#           "C:/Users/Steph/OneDrive - Texas A&M University/Thrushes/survival/data/thrush_meta_240104.csv")

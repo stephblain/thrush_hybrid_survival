@@ -1,66 +1,3 @@
-#estimate depression under diff models
-#f=0 is good, f=1 is bad
-#start set of [0,0,1,0,0] should equal 0
-#S is ancestry, H is heterozygosity
-#mod_H is the modifier associated with each form of selection to determine
-##influence of H - so 1 for epistatic, 0 or additive, 0.5 for both
-#fp1 is relative survival of parent 1, fp2 is parent 2
-
-est_f<-function(S,H,mod_H,fp1,fp2){
-  
-  #calculate f
-  f.1<-fp1+(4-2*fp1)*S*(1-((4-fp1-fp2)/(4-2*fp1))*S)-mod_H*H
-  #standardize to fall between 0 and 1
-  f.2<-(f.1-min(f.1))/(max(f.1)-min(f.1))
-  f.2}
-
-est_f_maladapted<-function(H,mod_H){
-  
-  #calculate f
-  f.1<-2-mod_H*H
-  #standardize to fall between 0 and 1
-  f.2<-(f.1-min(f.1))/(max(f.1)-min(f.1))
-  f.2}
-
-
-#calc barrier metric - level of hybridization
-#from Wang et al. 2022
-est_barrier<-function(S,H){
-  sqrt((2*(S-0.5))^2+H^2)}
-
-
-#HI_data must contain "retrieved_spring", "S", "H" and "barrier"
-run_gams<-function(HI_data,retrieved_col){
-  
-  colnames(HI_data)[colnames(HI_data)==retrieved_col]<-"retrieved_col_run_gams"
-  
-  gam.type.S<-gam(retrieved_col_run_gams~s(S),family=binomial(link="logit"),
-                  data=HI_data)
-  gam.gr.type.S<-gam.gradients(mod=gam.type.S,phenotype=c("S"),se.method="n")
-  
-  gam.type.H<-gam(retrieved_col_run_gams~s(H),family=binomial(link="logit"),
-                  data=HI_data)
-  gam.gr.type.H<-gam.gradients(mod=gam.type.H,phenotype=c("H"),se.method="n")
-  
-  gam.type.b<-gam(retrieved_col_run_gams~s(barrier),family=binomial(link="logit"),
-                  data=HI_data)
-  gam.gr.type.b<-gam.gradients(mod=gam.type.b,phenotype=c("barrier"),se.method="n")
-  
-  
-  df.type<-data.frame(t(gam.gr.type.S$estimates),t(gam.gr.type.H$estimates),
-                      t(gam.gr.type.b$estimates))
-  colnames(df.type)<-gsub("G-","Gamma ",
-                          gsub("B-","Beta ",c(rownames(gam.gr.type.S),rownames(gam.gr.type.H),rownames(gam.gr.type.b))))
-  
-  df.names<-data.frame(t(data.frame(str_split(colnames(df.type)," "))))
-  colnames(df.type)<-paste(df.names$X2,df.names$X1)
-  
-  df.type<-df.type%>%pivot_longer(cols=1:6,values_to="estimates",names_to="sel_gradient")
-  
-  df.type
-}
-
-
 #input:
 #thrush - dataframe with S, H, phenotypes, name_in_vcf
 #trait.names - list of trait names, must correspond to column names in thrush dataframe
@@ -278,11 +215,12 @@ plot_pairwise_mismatch<-function(mis.thrush){
       ggplot()+
       geom_point(data=mis.df,
                  aes_string(x=str_split(mis.pair,"_")[[1]][1],y=str_split(mis.pair,"_")[[1]][2],
-                            colour=mis.pair,shape="t5.spring40"),size=2)+
+                            colour=mis.pair),size=2)+
       geom_point(data=parents.w,aes_string(x=str_split(mis.pair,"_")[[1]][1],
                                            y=str_split(mis.pair,"_")[[1]][2],
-                                           shape="pop.type"),size=5,stroke=1.5)+
-      scale_shape_manual(values=c(1,19,2,5),name="")+
+                                           shape="pop.type"),size=5,stroke=1.5,
+                 colour="grey60")+
+      scale_shape_manual(values=c(2,5),name="")+
       scale_alpha(range=c(0.3,1))+
       scale_colour_viridis(name="mismatch",option="F",begin=vir.min.i,end=vir.max.i)+
       #scale_colour_gradientn(colours=pal)+
@@ -314,12 +252,14 @@ plot_pairwise_mismatch<-function(mis.thrush){
 #convert predictSurface() object to something plottable in ggplot
 #input:
 # HI_df=dataframe to feed into Tps, with columns ancestry, heterozygosity, and retrieved_spring
-make_plot_surface<-function(HI_df,survival_var){
+make_plot_surface<-function(HI_df,survival_var,ancestry_var,heterozygosity_var){
   # HI_df<-HI_juvie
-  # survival_var<-"retrieved_radio_spring_40"
+  # survival_var<-"t5_spring40"
+  # ancestry_var="ancestry"
+  # heterozygosity_var="heterozygosity"
+  # 
   
-  
-  tps.pop<-Tps(as.matrix(HI_df%>%select(ancestry,heterozygosity)),
+  tps.pop<-Tps(as.matrix(HI_df%>%select(all_of(ancestry_var),all_of(heterozygosity_var))),
                HI_df%>%select(all_of(survival_var)),method="REML")
   #surface(tps.pop)
   pred.pop<-predictSurface(tps.pop,nx=100,ny=100)
@@ -340,14 +280,25 @@ make_plot_surface<-function(HI_df,survival_var){
 #input: dataframe that includes columns named "ancestry" and "heterozygosity"
 #output: dataframe of coordinates for region of the triangle to cover in figure 
 ##with a polygon because there is no data there
-whiteOut_tri<-function(HI_df){
+whiteOut_tri<-function(HI_df,ancestry_var,heterozygosity_var){
+  # HI_df=HI_juvie
+  # ancestry_var="ancestry_scaf4"
+  # heterozygosity_var="heterozygosity_scaf4"
+  
+  #convert character variables to symbol for filtering
+  #then use !! before variable names to inject them into dplyr function
+  heterozygosity_var1=as.symbol(heterozygosity_var)
+  ancestry_var1=as.symbol(ancestry_var)
   
   #get max ancestry on the coastal side (bottom left of polygon)
-  min_ancestry<-max(HI_df%>%filter(heterozygosity<0.25&ancestry<0.5)%>%pull(ancestry))+0.05
+  min_ancestry<-max(HI_df%>%filter(!!heterozygosity_var1<0.25&!!ancestry_var1<0.5)%>%
+                      pull(!!ancestry_var1))+0.05
   #min ancestry on inland side (bottom right)
-  max_ancestry<-min(HI_df%>%filter(heterozygosity<0.25&ancestry>0.5)%>%pull(ancestry))-0.05
+  max_ancestry<-min(HI_df%>%filter(!!heterozygosity_var1<0.25&!!ancestry_var1>0.5)%>%
+                      pull(!!ancestry_var1))-0.05
   #min heterozygosity for F1ish hybrids - top y coord, with 0.47 and 0.53 as x coords
-  max_heterozygosity<-min(HI_df%>%filter(ancestry>0.4&ancestry<0.6)%>%pull(heterozygosity))-0.05
+  max_heterozygosity<-min(HI_df%>%filter(!!ancestry_var1>0.4&!!ancestry_var1<0.6)%>%
+                            pull(!!heterozygosity_var1))-0.05
   
   poly.out<-data.frame(X.co=c(min_ancestry,0.47,0.53,max_ancestry),
                        Y.co=rep(c(0,max_heterozygosity,max_heterozygosity,0)))

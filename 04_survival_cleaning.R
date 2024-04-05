@@ -1,6 +1,6 @@
-############################################
+###################################################################
 #Clean up raw radio tag data to estimate survival
-############################################
+###################################################################
 
 #load packages
 pkgs<-c("tidyverse","viridis","ggpubr","sf","rnaturalearth")
@@ -9,12 +9,13 @@ theme_set(theme_classic())
 
 setwd("C:/Users/Steph/OneDrive - Texas A&M University/Thrushes/survival/data/raw/")
 
-#This is the output from Hannah's scripts 1 and 2 - on delmore github under survival analysis
+#This is the output from Hannah's scripts 1 and 2 - on Delmore github under survival analysis
 #see those scripts for additional filtering
 lat.df<-read.csv("2.filtered_data_Jul_1.csv")
 
 #read in meta data - output from 01_phenotypes_cleaning.R
-meta_thrush<-read.csv("../thrush_meta_230712.csv")
+meta_thrush<-read.csv("../thrush_meta_240104.csv")%>%
+  select(-ancestry,-heterozygosity)
 
 #read in adult recapture data - previously compiled for 2010-2022
 # and new list for 2023 recaptures
@@ -24,6 +25,36 @@ adult_recap_20102022<-read.csv("survival_data_motus_by_latitude_updated.csv")%>%
 
 #load map data
 world <- ne_countries(scale = "medium", returnclass = "sf")
+
+hi.noZ<-read.csv("hiest.stitch.ldr01.hwe.s1.fst94.noZ.adj98.csv")%>%
+  mutate(S=S*(-1)+1)%>%select(-logLik)%>%
+  rename(name_in_vcf=ind,ancestry=S,heterozygosity=H)
+hi.noZno4<-read.csv("hiest.stitch.ldr01.hwe.s1.fst94.noZ.no4.adj98.csv")%>%
+  mutate(S=S*(-1)+1)%>%select(-logLik)%>%
+  rename(name_in_vcf=ind,ancestry_no4=S,heterozygosity_no4=H)
+hi.scaf4<-read.csv("hiest.stitch.ldr01.hwe.s1.fst94.noZ.scaf4.adj98.csv")%>%
+  mutate(S=S*(-1)+1)%>%select(-logLik)%>%
+  rename(name_in_vcf=ind,ancestry_scaf4=S,heterozygosity_scaf4=H)
+hi.all<-left_join(left_join(hi.noZ,hi.noZno4),hi.scaf4)
+
+
+meta_thrush<-left_join(meta_thrush,hi.all)
+
+p_hi<-read.csv("p_hiest.stitch.ldr01.hwe.s1.fst94.noZ.adj98.csv")
+nrow(p_hi) #number of sites
+#distribution of sites on scaffolds
+ggplot(data=p_hi,aes(x=scaffold))+
+  geom_bar()+ylab("sites")
+
+poly.all<-data.frame(X.co=rep(c(0,0.5,1)), #make triangle polygon for plotting
+                     Y.co=rep(c(0,1,0)))
+
+
+ggplot()+
+  geom_polygon(data=poly.all,aes(x=X.co,y=Y.co),fill=NA,colour="black")+
+  geom_point(data=meta_thrush,aes(x=ancestry,y=heterozygosity),size=1,shape=1,stroke=1)+
+  coord_equal()+xlab("ancestry")+ylab("heterozygosity")
+
 
 
 #clean up detections
@@ -80,6 +111,62 @@ lat.sum<-lat.df%>% #next use case when to make column retrievals column and retr
 lat.sum<-left_join(lat.sum,lat.df%>%group_by(name_in_vcf)%>%
   summarise(taggedDays=max(tagDays)))
 
+###################################################################
+#format capture histories for input to CJS models
+###################################################################
+
+
+ch.df<-data.frame()
+ch_multi.df<-data.frame()
+
+#for each individual in juvenile survival dataset
+#released in Pemberton, not translocated
+for(i in meta_thrush%>%filter(tag_type=="radio"&age_release=="HY"&release_site=="Pemberton")%>%
+    filter(!name_in_vcf%in%c("BH30H01","BH29H01","BH29H03","BH29H04","BH29H05","BH29H07"))%>%
+    pull(name_in_vcf)){
+  x1<-rep(0,300)
+  x2<-rep(0,300)
+  
+  y<-lat.df%>%filter(name_in_vcf==i)%>%
+    mutate(ch_multi=case_when(recvDeployLat>40&tagDays<150~"A",
+                                recvDeployLat<40~"B",
+                                recvDeployLat>40&tagDays>150~"C"))%>%
+    select(name_in_vcf,tagDays,ch_multi)%>%distinct()
+  
+  x2[y%>%filter(tagDays<301)%>%pull(tagDays)]<-
+    y%>%filter(tagDays<301)%>%pull(ch_multi)
+  x2[1]<-"A"
+  
+  y1<-y%>%pull(tagDays)
+  x1[c(1,y1[y1<301])]<-1 #add 1 to detections because bird was caught the day it was tagged
+  if(length(y1)>0){if(max(y1)>300){
+    x1[300]<-1
+    x2[300]<-"C"    }} #fill in last day if bird caught later
+  
+  ch.df<-rbind(ch.df,c(i,x1))
+  ch_multi.df<-rbind(ch_multi.df,c(i,x2))
+  
+  }
+
+colnames(ch.df)[1]<-"name_in_vcf"
+colnames(ch_multi.df)[1]<-"name_in_vcf"
+
+ch.df<-ch.df%>%unite(ch,-name_in_vcf,sep="")
+ch_multi.df<-ch_multi.df%>%unite(ch_multi,-name_in_vcf,sep="")
+ch.df<-ch.df%>%left_join(ch_multi.df)%>%left_join(meta_thrush)%>%
+  mutate(ch=paste("days",ch,sep="_"))%>% #stops capture history from being saved as a very large number
+  select(name_in_vcf,ancestry,heterozygosity,
+         ancestry_no4,heterozygosity_no4,ancestry_scaf4,heterozygosity_scaf4,
+         release_site,release_year,tag_type,sex_binary,age_release,
+         release_gps.n,release_gps.w,motustagid,ch,ch_multi)
+
+
+#write.csv(ch.df,"C:/Users/Steph/OneDrive - Texas A&M University/Thrushes/survival/data/thrush_survival_ch_240104.csv")
+
+###################################################################
+##Get a binary estimate of survival at different time points
+#Not used for model-fitting
+###################################################################
 
 #fill in previous cols with 1 if detected at a later time point
 lat.new<-lat.sum%>%
@@ -91,6 +178,7 @@ lat.new<-lat.sum%>%
 #add survival to metadata
 HI_thrush<-left_join(meta_thrush,lat.new)%>%
   select(name_in_vcf,ancestry,heterozygosity,
+         ancestry_no4,heterozygosity_no4,ancestry_scaf4,heterozygosity_scaf4,
          release_site,release_year,tag_type,sex_binary,age_release,
          release_gps.n,release_gps.w,motustagid,
          t1_fall40,t2_fall25,t3_winter00,t4_spring25,t5_spring40,taggedDays)
@@ -103,8 +191,8 @@ HI_thrush<-HI_thrush%>%
   #remove tag types that don't match age and only keep Pemberton juvies
   filter(!(age_release%in%c("HY")&tag_type%in%c("archival")))%>%
   filter(!(age_release%in%c("SY","ASY")&tag_type%in%c("radio")))%>%
-  filter(!(age_release=="HY"&release_site!="Pemberton"))%>%
-  mutate(ancestry=(ancestry*(-1)+1)) #adjust so that coastal is 0 and inland is 1
+  filter(!(age_release=="HY"&release_site!="Pemberton"))
+
 
 #fill in zeroes for juvie survival columns
 HI_thrush<-HI_thrush%>%
@@ -123,6 +211,11 @@ HI_thrush<-HI_thrush%>%
          t3_winter00=case_when(taggedDays>365~1,TRUE~t3_winter00),
          t4_spring25=case_when(taggedDays>365~1,TRUE~t4_spring25),
          t5_spring40=case_when(taggedDays>365~1,TRUE~t5_spring40))
+
+###################################################################
+##Look at individual towers and birds for filtering
+#results applied above in lines 62-97
+###################################################################
 
 
 #print data for particular towers
@@ -161,7 +254,7 @@ lat.df<-lat.df%>%
 
 
 print_maps=F
-map_location="../../figures/filtered_birds_2023/check_230704/"
+map_location="../../figures/filtered_birds_2023/check_231019/"
 
 #print out a map of every included detection for each bird to manually check
 if(print_maps==T){
@@ -276,9 +369,10 @@ ggplot(data = world) +
   coord_sf(xlim=c(-150,-40),ylim=c(0,70),expand=FALSE)+
   xlab("Longitude")+ylab("Latitude")
 
-####################################
+###################################################################
 #now sort out adult survival
-####################################
+#based on recapture of tagged birds
+###################################################################
 
 adults_recap<-rbind(adult_recap_20102022%>%
                       mutate(retrieved_archival=case_when(retrieved_archival=="y"~1,
@@ -302,60 +396,6 @@ adults_recap<-adults_recap%>%
 HI_thrush<-left_join(HI_thrush,adults_recap)%>%
   filter(name_in_vcf!="AF14H02")
 
-#write.csv(HI_thrush,"../thrush_survival_230712.csv")
 
+#write.csv(HI_thrush,"../thrush_survival_240106.csv")
 
-
-#####################
-#Graveyard of forgotten code chunks
-#####################
-
-
-#old code - checking with Hannah's latitude estimates
-# retrieval.lat<-meta_thrush%>%
-#   filter(age_release=="HY")%>%
-#   select(c("name_in_vcf",grep("retrieved_radio_spring_",
-#                                                       colnames(meta_thrush))))%>%
-#   gather("spring.latitude","retrieval.all",-name_in_vcf)%>% #long form
-#   mutate(spring.latitude=str_sub(spring.latitude,end=-6))%>% #trim years
-#   group_by(spring.latitude,name_in_vcf)%>%
-#   #sum across all years to count any retrieval; with na.rm it will be 0 if all NAs
-#   summarise(retrieval.sum=sum(retrieval.all,na.rm=T))%>%
-#   #everything <1 is 0, everything about 0 is 1
-#   mutate(retrieval.sum=case_when(retrieval.sum<1~0,retrieval.sum>0~1))%>%
-#   pivot_wider(names_from=spring.latitude,values_from=retrieval.sum)%>%
-#   select(-retrieved_radio_spring,-retrieved_radio_spring_2) #remove redundant column
-# 
-# 
-# meta_thrush<-left_join(meta_thrush,retrieval.lat); rm(retrieval.lat)
-
-
-
-
-# HI_check<-HI_thrush%>%filter(age_release=="HY")%>%
-#   select(name_in_vcf,t5_spring40,retrieved_radio_spring_40,t4_spring25,retrieved_radio_spring_25,
-#          t1_fall40,retrieved_fall,days_survived,taggedDays)%>%
-#   mutate(days_survived=coalesce(days_survived,0))
-# 
-# check_juvies<-HI_check%>%filter(t5_spring40!=retrieved_radio_spring_40|t4_spring25!=retrieved_radio_spring_25|
-#                                   days_survived!=taggedDays)%>%pull(name_in_vcf)
-# 
-# lat.check<-lat.df%>%filter(name_in_vcf%in%check_juvies)%>%
-#   select(name_in_vcf,ts,tagDeployStart,recvDeployID,recvDeployLat,recvDeployLon,recvDeployName,year,detectdoy)%>%
-#   mutate(ts=substr(ts,1,10))%>%mutate(tagDeployStart=substr(tagDeployStart,1,10))%>%distinct()
-
-
-# HI_thrush%>%filter(name_in_vcf%in%check_juvies)%>%select(name_in_vcf,days_survived,taggedDays)
-# ggplot(data=HI_thrush%>%filter(!is.na(t5_spring40)),
-#        aes(x=as.factor(t5_spring40),y=taggedDays))+geom_jitter(width=0.1,height=0)+
-#   geom_hline(yintercept=365)
-# 
-# 
-# 
-# #get birds that survived for over a year
-# check_juvies_2<-HI_check%>%filter(taggedDays>365&t5_spring40==0)%>%pull(name_in_vcf)
-# lat.check.2<-lat.df%>%filter(name_in_vcf%in%check_juvies_2)%>%
-#   select(name_in_vcf,ts,tagDeployStart,recvDeployID,recvDeployLat,recvDeployLon,recvDeployName,year)%>%
-#   mutate(ts=substr(ts,1,10))%>%mutate(tagDeployStart=substr(tagDeployStart,1,10))%>%distinct()%>%
-#   mutate(tagDays=as.integer(gsub(" days"," ",difftime(ts,tagDeployStart,units="days"))))%>%
-#   filter(tagDays>365)

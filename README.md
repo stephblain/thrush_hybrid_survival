@@ -4,37 +4,49 @@ R and R markdown scripts associated with manuscript "Reduced hybrid survival in 
 
 ### 00_functions_survival.R
 
-Functions needed for downstream analysis in "04_phenoytpes.Rmd" and "05_survival.Rmd"
+Functions needed for downstream analysis in "09_phenoytpe_figures.Rmd" and "11_survival_figures.R"
 
-### 01_phenotypes_cleaning.R
+### 01_vcf_to_hiestInput.sh
+
+Process vcf to get divergent SNPs and allele counts for ref panel and target hybrids
+
+### 02_run_hiest.R
+
+Some more data formatting, then run hiest to estimate ancestry and heterozygosity
+
+### 03_phenotypes_cleaning.R
 
 Clean raw phenotype data
 Produce metadata for adults and juveniles
 
-### 02_latitude_cleaning.R
+### 04_survival_cleaning.R
 
 Clean and visualize raw motus detection and archival tag retrieval data
 
-### 03_phenotype_network.R
+### 05_CJS_ancestryHeterozygosity.R
 
-Build correlation network of migratory phenotypes
+Survival analysis - test for selection based on genomic class (ancestry and heterozygosity) with CJS model in juveniles
 
-### 04_phenoytpes.Rmd
+### 06_MSCJS_ancestryHeterozygosity.R
 
-Phenotype analysis - test for selection against intermediate phenotypes and phenotypic mismatch
+Survival analysis - test for transitions between migratory states based on genomic class (ancestry and heterozygosity) with multistate CJS model in juveniles
 
-### 05_survival.Rmd
+### 07_CJS_phenotypes.R
 
-Survival analysis - test for selection based on genomic class (ancestry and heterozygosity)
+Phenotype analysis - test for selection against intermediate phenotypes and phenotypic mismatch with CJS model in juveniles
 
-### 06_simulate_juvies_to2022.R
+### 08_GLM_adults.random
 
-Simulate expected juvenile genomic classes based on a random mating among birds that survive migration and subspecies migrants
+Survival analysis - test for selection based on genomic class (ancestry and heterozygosity) in adults
 
-### 07_plot_juvie_sims.Rmd
+### 09_phenoytpes.Rmd
 
-Visualize output from simulated juvies
+Make phenotype figures (fig 3)
 
-### 08_subspecies_map.R
+### 10_subspecies_map.R
 
-Map subspecies ranges and motus tracks/towers
+Map subspecies ranges and motus tracks/towers (fig 1)
+
+### 11_survival_figures.R
+
+Plot survival outcomes based on genomic class from CJS and GLM's for juveniles and adults
