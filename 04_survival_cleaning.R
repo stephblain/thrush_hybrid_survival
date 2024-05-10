@@ -6,21 +6,25 @@
 pkgs<-c("tidyverse","viridis","ggpubr","sf","rnaturalearth")
 sapply(pkgs,library,character.only=T); rm(pkgs)
 theme_set(theme_classic())
-
+library(readxl)
 setwd("C:/Users/Steph/OneDrive - Texas A&M University/Thrushes/survival/data/raw/")
 
-#This is the output from Hannah's scripts 1 and 2 - on Delmore github under survival analysis
-#see those scripts for additional filtering
-lat.df<-read.csv("2.filtered_data_Jul_1.csv")
+#This is the output from pre-cleaning scripts 1 and 2
+#see 04_01_download_motus.R and 04_02_add_motus_tag_ids.R for additional filtering
+#lat.df<-read.csv("2.filtered_data_Jul_1.csv")
+lat.df<-read_xlsx("tag_detection_data.xlsx",sheet="2.filtered_data_Jul_1")
 
 #read in meta data - output from 01_phenotypes_cleaning.R
-meta_thrush<-read.csv("../thrush_meta_240104.csv")%>%
-  select(-ancestry,-heterozygosity)
+#meta_thrush<-read.csv("../thrush_meta_240104.csv")
+meta_thrush<-read_xlsx("tag_detection_data.xlsx",sheet="thrush_meta_240104")
 
 #read in adult recapture data - previously compiled for 2010-2022
 # and new list for 2023 recaptures
-adult_recap_2023<-read.csv("adults_recaptured_2023.csv")
-adult_recap_20102022<-read.csv("survival_data_motus_by_latitude_updated.csv")%>%
+#adult_recap_2023<-read.csv("adults_recaptured_2023.csv")
+adult_recap_2023<-read_xlsx("tag_detection_data.xlsx",sheet="adults_recaptured_2023")
+#adult_recap_20102022<-read.csv("survival_data_motus_by_latitude_updated.csv")
+adult_recap_20102022<-read_xlsx("tag_detection_data.xlsx",sheet="survival_data_motus_by_latitude")
+adult_recap_20102022<-adult_recap_20102022%>%
   filter(tag_type=="archival"&age_release!="HY")
 
 #load map data
@@ -389,7 +393,7 @@ adults_recap<-rbind(adult_recap_20102022%>%
 adults_recap<-adults_recap%>%
   filter(name_in_vcf!="AF14H02")%>% #remove duplicate individual (other ID DF27H08)
   mutate(band=if_else(name_in_vcf=="DF27H08","298108794",band))%>%
-  mutate(retrieved_archival=if_else(band%in%adult_recap_2023$banding_.,1,retrieved_archival))%>%
+  mutate(retrieved_archival=if_else(band%in%adult_recap_2023$`banding_#`,1,retrieved_archival))%>%
   select(name_in_vcf,retrieved_archival) #only keep the two necessary variables
 
 #add adult data to survival spreadsheet

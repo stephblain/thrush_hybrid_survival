@@ -12,6 +12,13 @@ inland<-read_sf(dsn="C:/Users/Steph/OneDrive - Texas A&M University/Thrushes/sur
                  layer="Catharus_swainsoni")
 receivers<-read.csv("receiver-deployments.csv")
 
+lat2<-lat.coord%>%filter(recvProjName=="thrushes")%>%filter(doy.aug24>100)%>%
+  mutate(ts2=substr(ts,6,11))%>%
+  arrange(ts2)
+ggplot(lat2,aes(x=ts2))+
+  geom_bar()
+
+
 #load map data
 world <- ne_countries(scale = "medium", returnclass = "sf")
 
